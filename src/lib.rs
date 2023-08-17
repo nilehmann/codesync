@@ -1,5 +1,5 @@
 use std::{
-    cell::OnceCell,
+    collections::HashMap,
     io,
     ops::Range,
     path::{Path, PathBuf},
@@ -8,25 +8,23 @@ use std::{
 
 mod kmp;
 
-const CODESYNC: &[u8] = b"CODESYNC";
+const CODESYNC: [u8; 8] = [b'C', b'O', b'D', b'E', b'S', b'Y', b'N', b'C'];
 const CODESYNC_KMP_TABLE: [usize; CODESYNC.len()] = kmp::table(CODESYNC);
 
 pub struct Matches {
-    pub files: Vec<FileMatches>,
+    pub files: Vec<FileMatch>,
 }
 
-pub struct FileMatches {
+pub struct FileMatch {
     pub path: PathBuf,
     matches: Vec<Match>,
-    content: OnceCell<String>,
 }
 
-impl FileMatches {
+impl FileMatch {
     fn new(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
             matches: vec![],
-            content: OnceCell::new(),
         }
     }
 
@@ -34,20 +32,7 @@ impl FileMatches {
         self.matches.push(m)
     }
 
-    pub fn invalid(&self) -> impl Iterator<Item = InvalidMatch> + '_ {
-        self.matches.iter().filter_map(Match::to_invalid)
-    }
-
-    pub fn content(&self) -> std::io::Result<&str> {
-        if let Some(val) = self.content.get() {
-            return Ok(val);
-        }
-        let val = self.read_content()?;
-        assert!(self.content.set(val).is_ok(), "reentrant init");
-        Ok(self.content.get().unwrap())
-    }
-
-    fn read_content(&self) -> std::io::Result<String> {
+    pub fn read_content(&self) -> std::io::Result<String> {
         std::fs::read_to_string(&self.path)
     }
 }
@@ -65,88 +50,137 @@ impl Matches {
 
             if file_type.is_file() {
                 let path = dir.path();
-                let mut file = FileMatches::new(path);
-                grep::searcher::SearcherBuilder::new()
-                    .after_context(2)
-                    .build()
-                    .search_path(
-                        &matcher,
-                        path,
-                        Sink(|byte_offset, line| {
-                            file.push(matcher.parse_line(byte_offset as usize, &line));
-                        }),
-                    )?;
-                files.push(file);
+                let mut file = FileMatch::new(path);
+                grep::searcher::Searcher::new().search_path(
+                    &matcher,
+                    path,
+                    Sink(|byte_offset, line| {
+                        file.push(matcher.parse_line(byte_offset as usize, &line));
+                    }),
+                )?;
+                if !file.matches.is_empty() {
+                    files.push(file);
+                }
             }
         }
         Ok(Self { files })
     }
 
-    // pub fn group_by_label(&self) -> HashMap<&str, Vec<ValidMatch>> {
-    //     let mut groups = HashMap::new();
-    //     for comment in self.valid() {
-    //         groups
-    //             .entry(&*comment.opts.label)
-    //             .or_insert(vec![])
-    //             .push(comment)
-    //     }
-    //     groups
-    // }
+    pub fn group_by_label(&self) -> HashMap<&str, Vec<Comment>> {
+        let mut groups = HashMap::new();
+        for comment in self.valid() {
+            groups
+                .entry(&*comment.opts.label)
+                .or_insert(vec![])
+                .push(comment)
+        }
+        groups
+    }
 
-    // pub fn valid(&self) -> impl Iterator<Item = ValidMatch> + '_ {
-    //     self.matches.iter().filter_map(Match::to_valid)
-    // }
+    /// Iterator over all valid comments
+    pub fn valid(&self) -> impl Iterator<Item = Comment> + '_ {
+        self.files
+            .iter()
+            .flat_map(|file| file.matches.iter().filter_map(|m| m.to_valid(&file.path)))
+    }
+
+    /// Iterator over all invalid comments
+    pub fn invalid(&self) -> impl Iterator<Item = InvalidComment> + '_ {
+        self.files
+            .iter()
+            .flat_map(|file| file.matches.iter().filter_map(|m| m.to_invalid(&file.path)))
+    }
 }
 
 #[derive(Debug)]
 struct Match {
     opts: Result<Opts, ParseError>,
-    span: Range<usize>,
+    /// The offset in bytes from the beginning of the file to the start of the match
+    byte_offset: usize,
 }
 
 impl Match {
-    fn to_valid<'a>(&'a self) -> Option<ValidMatch<'a>> {
+    fn to_valid<'a>(&'a self, file: &'a Path) -> Option<Comment<'a>> {
         if let Ok(opts) = &self.opts {
-            Some(ValidMatch { opts })
+            Some(Comment {
+                opts,
+                file,
+                m: self,
+            })
         } else {
             None
         }
     }
 
-    fn to_invalid(&self) -> Option<InvalidMatch> {
+    fn to_invalid<'a>(&'a self, file: &'a Path) -> Option<InvalidComment> {
         if let Err(error) = self.opts {
-            Some(InvalidMatch { error, m: self })
+            Some(InvalidComment {
+                error,
+                m: self,
+                file,
+            })
         } else {
             None
         }
     }
 
     fn span(&self) -> Range<usize> {
-        self.span.clone()
+        let start = self.byte_offset;
+        let mut end = start + CODESYNC.len();
+        if let Ok(opts) = &self.opts {
+            end += opts.len;
+        }
+        start..end
     }
 }
 
-pub struct InvalidMatch<'a> {
-    pub error: ParseError,
+/// A valid codesync comment
+#[derive(Copy, Clone)]
+pub struct Comment<'a> {
+    pub opts: &'a Opts,
+    file: &'a Path,
     m: &'a Match,
 }
 
-impl InvalidMatch<'_> {
+impl Comment<'_> {
     pub fn span(&self) -> Range<usize> {
         self.m.span()
     }
+
+    pub fn file(&self) -> &Path {
+        self.file
+    }
 }
 
-#[derive(Copy, Clone)]
-pub struct ValidMatch<'a> {
-    opts: &'a Opts,
+/// An invalid codesync comment
+pub struct InvalidComment<'a> {
+    pub error: ParseError,
+    file: &'a Path,
+    m: &'a Match,
+}
+
+impl InvalidComment<'_> {
+    pub fn span(&self) -> Range<usize> {
+        self.m.span()
+    }
+
+    pub fn file(&self) -> &Path {
+        self.file
+    }
 }
 
 #[derive(Debug)]
 pub struct Opts {
     pub label: String,
-    pub count: Option<u64>,
+    count: Option<u32>,
+    /// The length of the parsed string including delimiting parentheses
     len: usize,
+}
+
+impl Opts {
+    pub fn count(&self) -> u32 {
+        self.count.unwrap_or(2)
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -161,9 +195,9 @@ struct Matcher {
 
 impl Matcher {
     fn new() -> Matcher {
-        const REGEX: &str = r"\(\s*([A-Za-z0-9\-_]*)\s*(?:,\s*([^\)]*)\s*)?\)";
+        const OPTS_REGEX: &str = r"^\(\s*([A-Za-z0-9\-_]*)\s*(?:,\s*([^\)]*)\s*)?\)";
         Matcher {
-            re: regex::Regex::new(REGEX).unwrap(),
+            re: regex::Regex::new(OPTS_REGEX).unwrap(),
         }
     }
 
@@ -174,11 +208,9 @@ impl Matcher {
             &line[idx + CODESYNC.len()..],
         );
 
-        let start = byte_offset as usize + idx;
-        let end = start + CODESYNC.len() + if let Ok(opts) = &opts { opts.len } else { 0 };
         Match {
             opts,
-            span: start..end,
+            byte_offset: byte_offset + idx,
         }
     }
 
@@ -190,7 +222,7 @@ impl Matcher {
         let count = if let Some(m) = captures.get(2) {
             Some(
                 m.as_str()
-                    .parse::<u64>()
+                    .parse::<u32>()
                     .map_err(|_| ParseError::InvalidCount {
                         start: byte_offset + m.start(),
                         end: byte_offset + m.end(),
@@ -202,7 +234,7 @@ impl Matcher {
         Ok(Opts {
             label,
             count,
-            len: captures.len(),
+            len: captures[0].len(),
         })
     }
 }
@@ -251,5 +283,5 @@ impl grep::matcher::Matcher for &Matcher {
 }
 
 fn find_codesync(haystack: &[u8]) -> Option<usize> {
-    kmp::search(&haystack, CODESYNC, &CODESYNC_KMP_TABLE)
+    kmp::search(&haystack, &CODESYNC, &CODESYNC_KMP_TABLE)
 }

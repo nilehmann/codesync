@@ -26,7 +26,7 @@ pub const fn search(haystack: &[u8], needle: &[u8], table: &[usize]) -> Option<u
     None
 }
 
-pub const fn table<const N: usize>(p: &[u8]) -> [usize; N] {
+pub const fn table<const N: usize>(p: [u8; N]) -> [usize; N] {
     let m = p.len();
     let mut t = [0; N];
 
