@@ -18,8 +18,17 @@ use codespan_reporting::{
 use codesync::{Comment, Matches, ParseError};
 
 #[derive(Parser)]
+#[command(disable_help_subcommand = true)]
 enum Args {
+    /// Check that all codesync comments are well-formed and counts are correct.
     Check,
+    /// Show all valid codesync comments with a given label.
+    Show(ShowArgs),
+}
+
+#[derive(clap::Args)]
+struct ShowArgs {
+    label: String,
 }
 
 type FileId = usize;
@@ -32,16 +41,51 @@ fn main() -> Result<(), Box<dyn Error>> {
         Args::Check => {
             Checker::new().check(&matches)?;
         }
+        Args::Show(ShowArgs { label }) => {
+            let mut db = FilesDB::new();
+            let mut emitter = Emitter::new();
+            let comments = matches.valid().filter(|m| &m.opts.label == &label);
+            let diagnostic = Diagnostic::note()
+                .with_message(format!("showing comments for label `{label}`"))
+                .with_labels(db.labels(comments)?);
+            emitter.emit(&db, diagnostic)?;
+        }
     }
 
     Ok(())
 }
 
+struct Emitter {
+    writer: StandardStream,
+    config: codespan_reporting::term::Config,
+}
+
+impl Emitter {
+    fn new() -> Self {
+        Self {
+            writer: StandardStream::stderr(ColorChoice::Always),
+            config: codespan_reporting::term::Config::default(),
+        }
+    }
+
+    fn emit(
+        &mut self,
+        db: &FilesDB,
+        diagnostic: Diagnostic<FileId>,
+    ) -> Result<(), codespan_reporting::files::Error> {
+        term::emit(
+            &mut self.writer.lock(),
+            &self.config,
+            &db.files,
+            &diagnostic,
+        )
+    }
+}
+
 struct Checker {
     db: FilesDB,
     has_errors: bool,
-    writer: StandardStream,
-    config: codespan_reporting::term::Config,
+    emitter: Emitter,
 }
 
 impl Checker {
@@ -49,8 +93,7 @@ impl Checker {
         Self {
             db: FilesDB::new(),
             has_errors: false,
-            writer: StandardStream::stderr(ColorChoice::Always),
-            config: codespan_reporting::term::Config::default(),
+            emitter: Emitter::new(),
         }
     }
 
@@ -117,10 +160,7 @@ impl Checker {
         comments: &[Comment],
         message: impl Into<String>,
     ) -> io::Result<Diagnostic<FileId>> {
-        let labels = comments
-            .iter()
-            .map(|comment| self.db.primary_label(comment.file(), comment.span()))
-            .collect::<io::Result<_>>()?;
+        let labels = self.db.labels(comments.iter().copied())?;
         Ok(Diagnostic::error()
             .with_message(message)
             .with_labels(labels))
@@ -131,7 +171,7 @@ impl Checker {
         path: &Path,
         span: Range<usize>,
     ) -> io::Result<Diagnostic<FileId>> {
-        let label = self.db.primary_label(path, span)?;
+        let label = self.db.label(path, span)?;
         let note = "comment must contain a label and an optional count, e.g., `CODESYNC(my-label)`, `CODESYNC(my-label, 3)`".to_string();
         Ok(Diagnostic::error()
             .with_message("malformed codesync comment")
@@ -144,7 +184,7 @@ impl Checker {
         path: &Path,
         span: Range<usize>,
     ) -> io::Result<Diagnostic<FileId>> {
-        let label = self.db.primary_label(path, span)?;
+        let label = self.db.label(path, span)?;
         Ok(Diagnostic::error()
             .with_message("invalid count")
             .with_labels(vec![label])
@@ -162,12 +202,7 @@ impl Checker {
         diagnostic: Diagnostic<FileId>,
     ) -> Result<(), codespan_reporting::files::Error> {
         self.has_errors = true;
-        term::emit(
-            &mut self.writer.lock(),
-            &self.config,
-            &self.db.files,
-            &diagnostic,
-        )
+        self.emitter.emit(&self.db, diagnostic)
     }
 }
 
@@ -184,7 +219,17 @@ impl FilesDB {
         }
     }
 
-    fn primary_label(&mut self, path: &Path, span: Range<usize>) -> io::Result<Label<FileId>> {
+    fn labels<'a>(
+        &mut self,
+        comments: impl IntoIterator<Item = Comment<'a>>,
+    ) -> io::Result<Vec<Label<FileId>>> {
+        comments
+            .into_iter()
+            .map(|comment| self.label(comment.file(), comment.span()))
+            .collect::<io::Result<_>>()
+    }
+
+    fn label(&mut self, path: &Path, span: Range<usize>) -> io::Result<Label<FileId>> {
         let file_id = self.try_get_or_insert(path, || std::fs::read_to_string(path))?;
         Ok(Label::primary(file_id, span))
     }
