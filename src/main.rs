@@ -1,7 +1,7 @@
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     error::Error,
-    io,
+    io::{self, Write},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -12,18 +12,21 @@ use codespan_reporting::{
     files::SimpleFiles,
     term::{
         self,
-        termcolor::{ColorChoice, StandardStream},
+        termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor},
     },
 };
 use codesync::{Comment, Matches, ParseError};
 
 #[derive(Parser)]
 #[command(disable_help_subcommand = true)]
+/// This utility
 enum Args {
-    /// Check that all codesync comments are well-formed and counts are correct.
+    /// Check that all codesync comments are well-formed and their counts are correct.
     Check,
     /// Show all valid codesync comments with a given label.
     Show(ShowArgs),
+    /// List all valid labels.
+    List,
 }
 
 #[derive(clap::Args)]
@@ -43,12 +46,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Args::Show(ShowArgs { label }) => {
             let mut db = FilesDB::new();
-            let mut emitter = Emitter::new();
+            let mut emitter = Emitter::new(false);
             let comments = matches.valid().filter(|m| &m.opts.label == &label);
             let diagnostic = Diagnostic::note()
                 .with_message(format!("showing comments for label `{label}`"))
                 .with_labels(db.labels(comments)?);
             emitter.emit(&db, diagnostic)?;
+        }
+        Args::List => {
+            let stdout = &mut StandardStream::stdout(ColorChoice::Auto);
+            for (label, comments) in matches.group_by_label() {
+                stdout.set_color(ColorSpec::new().set_underline(true).set_bold(true))?;
+                write!(stdout, "{label}:")?;
+                stdout.reset()?;
+                writeln!(stdout, " {}", comments.len())?;
+            }
+            writeln!(stdout)?;
         }
     }
 
@@ -61,9 +74,14 @@ struct Emitter {
 }
 
 impl Emitter {
-    fn new() -> Self {
+    fn new(stderr: bool) -> Self {
+        let writer = if stderr {
+            StandardStream::stderr(ColorChoice::Auto)
+        } else {
+            StandardStream::stdout(ColorChoice::Auto)
+        };
         Self {
-            writer: StandardStream::stderr(ColorChoice::Always),
+            writer,
             config: codespan_reporting::term::Config::default(),
         }
     }
@@ -93,7 +111,7 @@ impl Checker {
         Self {
             db: FilesDB::new(),
             has_errors: false,
-            emitter: Emitter::new(),
+            emitter: Emitter::new(true),
         }
     }
 
@@ -145,8 +163,7 @@ impl Checker {
                 }
             }
             _ => {
-                let message =
-                    format!("all comments with label `{label}` must have the same count",);
+                let message = format!("not all comments with label `{label}` have the same count",);
                 let diagnostic = self.mismatched_counts_diagnostic(matches, message)?;
                 self.emit(diagnostic)?;
             }
