@@ -16,6 +16,7 @@ use codespan_reporting::{
     },
 };
 use codesync::{inflector, Arg, ArgsError, Comment, Matches};
+use regex::Regex;
 
 #[derive(Parser)]
 #[command(disable_help_subcommand = true)]
@@ -36,6 +37,9 @@ struct CheckArgs {
     /// Check that there is no extra whitespace around arguments.
     #[arg(long)]
     no_extra_whitespace: bool,
+    /// Check that labels match the given regex.
+    #[arg(long)]
+    label_pattern: Option<Regex>,
 }
 
 #[derive(Copy, Clone, clap::ValueEnum)]
@@ -121,12 +125,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Args::List => {
             let stdout = &mut StandardStream::stdout(ColorChoice::Auto);
-            for (label, comments) in matches.group_by_label() {
-                stdout.set_color(ColorSpec::new().set_bold(true))?;
-                write!(stdout, "{label}:")?;
-                stdout.reset()?;
-                writeln!(stdout, " {}", comments.len())?;
+            stdout.set_color(ColorSpec::new().set_bold(true))?;
+            for (label, _) in matches.group_by_label() {
+                write!(stdout, "{label}\n")?;
             }
+            stdout.reset()?;
             writeln!(stdout)?;
         }
     }
@@ -137,6 +140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct Emitter {
     writer: StandardStream,
     config: codespan_reporting::term::Config,
+    has_errors: bool,
 }
 
 impl Emitter {
@@ -149,6 +153,13 @@ impl Emitter {
         Self {
             writer,
             config: codespan_reporting::term::Config::default(),
+            has_errors: false,
+        }
+    }
+
+    fn abort_if_errors(&self) {
+        if self.has_errors {
+            std::process::exit(1);
         }
     }
 
@@ -157,6 +168,7 @@ impl Emitter {
         db: &FilesDB,
         diagnostic: Diagnostic<FileId>,
     ) -> Result<(), codespan_reporting::files::Error> {
+        self.has_errors = true;
         term::emit(
             &mut self.writer.lock(),
             &self.config,
@@ -169,7 +181,6 @@ impl Emitter {
 struct Checker {
     args: CheckArgs,
     db: FilesDB,
-    has_errors: bool,
     emitter: Emitter,
 }
 
@@ -178,7 +189,6 @@ impl Checker {
         Self {
             args,
             db: FilesDB::new(),
-            has_errors: false,
             emitter: Emitter::new(true),
         }
     }
@@ -195,11 +205,9 @@ impl Checker {
         self.report_inconsistent_casing(matches)?;
         self.abort_if_errors();
 
-        if self.args.no_extra_whitespace {
-            for comment in matches.comments() {
-                self.report_no_extra_whitespace(comment)?;
-            }
-        }
+        self.report_label_regex_mismatch(matches)?;
+
+        self.report_no_extra_whitespace(matches)?;
         self.abort_if_errors();
 
         Ok(())
@@ -208,9 +216,9 @@ impl Checker {
     fn report_invalid_matches(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
         for m in matches.invalid_matches() {
             let diagnostic = match m.error {
-                ArgsError::Malformed => self.malformed_diagnostic(m.file(), m.span())?,
+                ArgsError::Malformed => self.db.malformed_diagnostic(m.file(), m.span())?,
                 ArgsError::InvalidCount { start, end } => {
-                    self.invalid_count_diagnostic(m.file(), start..end)?
+                    self.db.invalid_count_diagnostic(m.file(), start..end)?
                 }
             };
             self.emit_diagnostic(diagnostic)?;
@@ -240,13 +248,13 @@ impl Checker {
                         "expected {expected} {} with label `{label}`, found {found}",
                         pluralize("comment", expected)
                     );
-                    let diagnostic = self.mismatched_counts_diagnostic(comments, message)?;
+                    let diagnostic = self.db.mismatched_counts_diagnostic(comments, message)?;
                     self.emit_diagnostic(diagnostic)?;
                 }
             }
             _ => {
                 let message = format!("not all comments with label `{label}` have the same count",);
-                let diagnostic = self.mismatched_counts_diagnostic(comments, message)?;
+                let diagnostic = self.db.mismatched_counts_diagnostic(comments, message)?;
                 self.emit_diagnostic(diagnostic)?;
             }
         }
@@ -258,7 +266,7 @@ impl Checker {
         if let Some(case) = self.args.consistent_casing {
             for comment in matches.comments() {
                 if !case.has_case(comment.label()) {
-                    let diagnostic = self.invalid_case_diagnostic(comment, case)?;
+                    let diagnostic = self.db.invalid_case_diagnostic(comment, case)?;
                     self.emit_diagnostic(diagnostic)?;
                 }
             }
@@ -266,100 +274,52 @@ impl Checker {
         Ok(())
     }
 
-    fn report_no_extra_whitespace(&mut self, comment: Comment) -> Result<(), Box<dyn Error>> {
-        if let Some(count_arg) = comment.count_arg() {
-            if count_arg.has_extra_whitespace() {
-                let diagnostic = self.extra_whitespace_diagnostic(comment.file(), count_arg)?;
-                self.emit_diagnostic(diagnostic)?;
-            }
-        }
-        let label_arg = comment.label_arg();
-        if label_arg.has_extra_whitespace() {
-            if label_arg.has_extra_whitespace() {
-                let diagnostic = self.extra_whitespace_diagnostic(comment.file(), label_arg)?;
-                self.emit_diagnostic(diagnostic)?;
+    fn report_no_extra_whitespace(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
+        if self.args.no_extra_whitespace {
+            for comment in matches.comments() {
+                if let Some(count_arg) = comment.count_arg() {
+                    if count_arg.has_extra_whitespace() {
+                        let diagnostic = self
+                            .db
+                            .extra_whitespace_diagnostic(comment.file(), count_arg)?;
+                        self.emit_diagnostic(diagnostic)?;
+                    }
+                }
+                let label_arg = comment.label_arg();
+                if label_arg.has_extra_whitespace() {
+                    if label_arg.has_extra_whitespace() {
+                        let diagnostic = self
+                            .db
+                            .extra_whitespace_diagnostic(comment.file(), label_arg)?;
+                        self.emit_diagnostic(diagnostic)?;
+                    }
+                }
             }
         }
 
         Ok(())
     }
 
-    fn extra_whitespace_diagnostic<T>(
-        &mut self,
-        file: &Path,
-        arg: &Arg<T>,
-    ) -> io::Result<Diagnostic<FileId>> {
-        let label = self.db.label(file, arg.span())?;
-        Ok(Diagnostic::error()
-            .with_message("argument has extra whitespace")
-            .with_labels(vec![label]))
-    }
-
-    fn invalid_case_diagnostic(
-        &mut self,
-        comment: Comment,
-        case: Case,
-    ) -> io::Result<Diagnostic<FileId>> {
-        let label = self
-            .db
-            .label(comment.file(), comment.span())?
-            .with_message(format!(
-                "should be written as {}",
-                case.to_case(comment.label())
-            ));
-        Ok(Diagnostic::error()
-            .with_message(format!("label doesn't use {case} case"))
-            .with_labels(vec![label]))
-    }
-
-    fn mismatched_counts_diagnostic(
-        &mut self,
-        comments: &[Comment],
-        message: impl Into<String>,
-    ) -> io::Result<Diagnostic<FileId>> {
-        let labels = self.db.labels(comments.iter().copied())?;
-        Ok(Diagnostic::error()
-            .with_message(message)
-            .with_labels(labels))
-    }
-
-    fn malformed_diagnostic(
-        &mut self,
-        path: &Path,
-        span: Range<usize>,
-    ) -> io::Result<Diagnostic<FileId>> {
-        let label = self.db.label(path, span)?;
-        let note = "comment must contain a label and an optional count, e.g., `CODESYNC(my-label)`, `CODESYNC(my-label, 3)`".to_string();
-
-        Ok(Diagnostic::error()
-            .with_message("malformed codesync comment")
-            .with_labels(vec![label])
-            .with_notes(vec![note]))
-    }
-
-    fn invalid_count_diagnostic(
-        &mut self,
-        path: &Path,
-        span: Range<usize>,
-    ) -> io::Result<Diagnostic<FileId>> {
-        let label = self.db.label(path, span)?;
-        Ok(Diagnostic::error()
-            .with_message("invalid count")
-            .with_labels(vec![label])
-            .with_notes(vec!["second argument must be an integer".to_string()]))
+    fn report_label_regex_mismatch(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
+        if let Some(re) = &self.args.label_pattern {
+            for comment in matches.comments() {
+                if !re.is_match(comment.label()) {
+                    let diagnostic = self.db.regex_mismatch_diagnostic(comment)?;
+                    self.emitter.emit(&self.db, diagnostic)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn abort_if_errors(&self) {
-        if self.has_errors {
-            std::process::exit(1);
-        }
+        self.emitter.abort_if_errors();
     }
 
     fn emit_diagnostic(
         &mut self,
         diagnostic: Diagnostic<FileId>,
     ) -> Result<(), codespan_reporting::files::Error> {
-        self.has_errors = true;
         self.emitter.emit(&self.db, diagnostic)
     }
 }
@@ -405,6 +365,77 @@ impl FilesDB {
                 Ok(file_id)
             }
         }
+    }
+
+    fn regex_mismatch_diagnostic(&mut self, comment: Comment) -> io::Result<Diagnostic<FileId>> {
+        let label = self.label(comment.file(), comment.label_arg().span())?;
+        Ok(Diagnostic::error()
+            .with_message("label doesn't match regex")
+            .with_labels(vec![label]))
+    }
+
+    fn extra_whitespace_diagnostic<T>(
+        &mut self,
+        file: &Path,
+        arg: &Arg<T>,
+    ) -> io::Result<Diagnostic<FileId>> {
+        let label = self.label(file, arg.span())?;
+        Ok(Diagnostic::error()
+            .with_message("argument has extra whitespace")
+            .with_labels(vec![label]))
+    }
+
+    fn invalid_case_diagnostic(
+        &mut self,
+        comment: Comment,
+        case: Case,
+    ) -> io::Result<Diagnostic<FileId>> {
+        let label = self
+            .label(comment.file(), comment.span())?
+            .with_message(format!(
+                "should be written as {}",
+                case.to_case(comment.label())
+            ));
+        Ok(Diagnostic::error()
+            .with_message(format!("label doesn't use {case} case"))
+            .with_labels(vec![label]))
+    }
+
+    fn mismatched_counts_diagnostic(
+        &mut self,
+        comments: &[Comment],
+        message: impl Into<String>,
+    ) -> io::Result<Diagnostic<FileId>> {
+        let labels = self.labels(comments.iter().copied())?;
+        Ok(Diagnostic::error()
+            .with_message(message)
+            .with_labels(labels))
+    }
+
+    fn malformed_diagnostic(
+        &mut self,
+        path: &Path,
+        span: Range<usize>,
+    ) -> io::Result<Diagnostic<FileId>> {
+        let label = self.label(path, span)?;
+        let note = "comment must contain a label and an optional count, e.g., `CODESYNC(my-label)`, `CODESYNC(my-label, 3)`".to_string();
+
+        Ok(Diagnostic::error()
+            .with_message("malformed codesync comment")
+            .with_labels(vec![label])
+            .with_notes(vec![note]))
+    }
+
+    fn invalid_count_diagnostic(
+        &mut self,
+        path: &Path,
+        span: Range<usize>,
+    ) -> io::Result<Diagnostic<FileId>> {
+        let label = self.label(path, span)?;
+        Ok(Diagnostic::error()
+            .with_message("invalid count")
+            .with_labels(vec![label])
+            .with_notes(vec!["second argument must be an integer".to_string()]))
     }
 }
 
