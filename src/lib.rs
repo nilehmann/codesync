@@ -6,6 +6,7 @@ use std::{
     str,
 };
 
+pub mod inflector;
 mod kmp;
 
 const CODESYNC: [u8; 8] = [b'C', b'O', b'D', b'E', b'S', b'Y', b'N', b'C'];
@@ -68,7 +69,7 @@ impl Matches {
     /// Return valid comments grouped by label. This ignores invalid matches.
     pub fn group_by_label(&self) -> HashMap<&str, Vec<Comment>> {
         let mut groups = HashMap::new();
-        for comment in self.valid() {
+        for comment in self.comments() {
             groups
                 .entry(&*comment.args.label())
                 .or_insert(vec![])
@@ -78,14 +79,14 @@ impl Matches {
     }
 
     /// Iterator over all valid comments
-    pub fn valid(&self) -> impl Iterator<Item = Comment> + '_ {
+    pub fn comments(&self) -> impl Iterator<Item = Comment> + '_ {
         self.files
             .iter()
             .flat_map(|file| file.matches.iter().filter_map(|m| m.to_comment(&file.path)))
     }
 
     /// Iterator over all invalid matches
-    pub fn invalid(&self) -> impl Iterator<Item = InvalidMatch> + '_ {
+    pub fn invalid_matches(&self) -> impl Iterator<Item = InvalidMatch> + '_ {
         self.files
             .iter()
             .flat_map(|file| file.matches.iter().filter_map(|m| m.to_invalid(&file.path)))

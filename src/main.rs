@@ -15,17 +15,78 @@ use codespan_reporting::{
         termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor},
     },
 };
-use codesync::{ArgsError, Comment, Matches};
+use codesync::{inflector, ArgsError, Comment, Matches};
 
 #[derive(Parser)]
 #[command(disable_help_subcommand = true)]
 enum Args {
     /// Check that all CODESYNC matches are well-formed and their counts are correct.
-    Check,
+    Check {
+        /// Check that all labels use the same casing
+        #[arg(long)]
+        consistent_casing: Option<Case>,
+    },
     /// Show all valid CODESYNC comments with a given label. This ignores invalid matches.
-    Show(ShowArgs),
+    Show { label: String },
     /// List all labels from valid comments. This ignores invalid matches.
     List,
+}
+
+#[derive(Copy, Clone, clap::ValueEnum)]
+enum Case {
+    #[value(name = "camelCase", aliases(["camel-case", "camel"]))]
+    Camel,
+    #[value(name = "kebab-case", aliases(["kebab-case", "kebab"]))]
+    Kebab,
+    #[value(name = "PascalCase", aliases(["pascal-case", "pascal"]))]
+    Pascal,
+    #[value(name = "SCREAMING_SNAKE_CASE", aliases(["screaming-snake-case", "screaming-snake"]))]
+    ScreamingSnake,
+    #[value(name = "snake_case", aliases(["snake-case", "snake"]))]
+    Snake,
+    #[value(name = "Train-Case", aliases(["train-case", "train"]))]
+    Train,
+}
+
+impl Case {
+    fn has_case(self, s: &str) -> bool {
+        match self {
+            Case::Camel => inflector::is_camel_case(s),
+            Case::Kebab => inflector::is_kebab_case(s),
+            Case::Pascal => inflector::is_pascal_case(s),
+            Case::ScreamingSnake => inflector::is_screaming_snake_case(s),
+            Case::Snake => inflector::is_snake_case(s),
+            Case::Train => inflector::is_train_case(s),
+        }
+    }
+
+    fn to_case(self, s: &str) -> String {
+        match self {
+            Case::Camel => inflector::to_camel_case(s, &HashSet::new()),
+            Case::Kebab => inflector::to_kebab_case(s),
+            Case::Pascal => inflector::to_pascal_case(s),
+            Case::ScreamingSnake => inflector::to_screaming_snake_case(s),
+            Case::Snake => inflector::to_snake_case(s),
+            Case::Train => inflector::to_train_case(s),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Case::Camel => "camel",
+            Case::Kebab => "kebab",
+            Case::Pascal => "pascal",
+            Case::ScreamingSnake => "screaming snake",
+            Case::Snake => "snake",
+            Case::Train => "train",
+        }
+    }
+}
+
+impl std::fmt::Display for Case {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
 }
 
 #[derive(clap::Args)]
@@ -40,13 +101,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let matches = Matches::collect()?;
     match args {
-        Args::Check => {
-            Checker::new().check(&matches)?;
+        Args::Check { consistent_casing } => {
+            Checker::new(consistent_casing).check(&matches)?;
         }
-        Args::Show(ShowArgs { label }) => {
+        Args::Show { label } => {
             let mut db = FilesDB::new();
             let mut emitter = Emitter::new(false);
-            let comments = matches.valid().filter(|c| &c.label() == &label);
+            let comments = matches.comments().filter(|c| &c.label() == &label);
             let diagnostic = Diagnostic::note()
                 .with_message(format!("showing comments for label `{label}`"))
                 .with_labels(db.labels(comments)?);
@@ -55,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Args::List => {
             let stdout = &mut StandardStream::stdout(ColorChoice::Auto);
             for (label, comments) in matches.group_by_label() {
-                stdout.set_color(ColorSpec::new().set_underline(true).set_bold(true))?;
+                stdout.set_color(ColorSpec::new().set_bold(true))?;
                 write!(stdout, "{label}:")?;
                 stdout.reset()?;
                 writeln!(stdout, " {}", comments.len())?;
@@ -100,14 +161,16 @@ impl Emitter {
 }
 
 struct Checker {
+    consistent_casing: Option<Case>,
     db: FilesDB,
     has_errors: bool,
     emitter: Emitter,
 }
 
 impl Checker {
-    fn new() -> Self {
+    fn new(consistent_casing: Option<Case>) -> Self {
         Self {
+            consistent_casing,
             db: FilesDB::new(),
             has_errors: false,
             emitter: Emitter::new(true),
@@ -118,16 +181,19 @@ impl Checker {
         self.report_invalid_matches(&matches)?;
         self.abort_if_errors();
 
-        for (label, matches) in matches.group_by_label() {
-            self.report_incorrect_counts(label, &matches)?;
+        for (label, comments) in matches.group_by_label() {
+            self.report_incorrect_counts(label, &comments)?;
         }
+        self.abort_if_errors();
+
+        self.report_inconsistent_casing(matches)?;
         self.abort_if_errors();
 
         Ok(())
     }
 
     fn report_invalid_matches(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
-        for m in matches.invalid() {
+        for m in matches.invalid_matches() {
             let diagnostic = match m.error {
                 ArgsError::Malformed => self.malformed_diagnostic(m.file(), m.span())?,
                 ArgsError::InvalidCount { start, end } => {
@@ -173,6 +239,35 @@ impl Checker {
         }
 
         Ok(())
+    }
+
+    fn report_inconsistent_casing(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
+        if let Some(case) = self.consistent_casing {
+            for comment in matches.comments() {
+                if !case.has_case(comment.label()) {
+                    let diagnostic = self.invalid_case_diagnostic(comment, case)?;
+                    self.emit_diagnostic(diagnostic)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn invalid_case_diagnostic(
+        &mut self,
+        comment: Comment,
+        case: Case,
+    ) -> io::Result<Diagnostic<FileId>> {
+        let label = self
+            .db
+            .label(comment.file(), comment.span())?
+            .with_message(format!(
+                "should be written as {}",
+                case.to_case(comment.label())
+            ));
+        Ok(Diagnostic::error()
+            .with_message(format!("label doesn't use {case} case"))
+            .with_labels(vec![label]))
     }
 
     fn mismatched_counts_diagnostic(
@@ -274,6 +369,6 @@ fn pluralize(word: &str, count: usize) -> String {
     if count == 1 {
         word.to_string()
     } else {
-        format!("{}s", word)
+        format!("{word}s")
     }
 }
