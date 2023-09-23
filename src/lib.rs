@@ -96,7 +96,6 @@ impl Matches {
 /// A *match* is an occurrence of the `CODESYNC` pattern which may or may not be valid. A match
 /// is identified by the offset in bytes from the beginning of the file where the `CODESYNC` pattern
 /// was found.
-#[derive(Debug)]
 pub struct Match {
     args: Result<Args, ArgsError>,
     /// The offset in bytes from the beginning of the file to the start of the match
@@ -131,8 +130,8 @@ impl Match {
     fn span(&self) -> Range<usize> {
         let start = self.byte_offset;
         let mut end = start + PATTERN.len();
-        if let Ok(opts) = &self.args {
-            end += opts.len;
+        if let Ok(args) = &self.args {
+            end += args.len;
         }
         start..end
     }
@@ -159,8 +158,16 @@ impl Comment<'_> {
         self.args.label()
     }
 
-    pub fn count(&self) -> u32 {
-        self.args.count.unwrap_or(2)
+    pub fn count(&self) -> u16 {
+        self.args.count.as_ref().map(|c| c.val).unwrap_or(2)
+    }
+
+    pub fn count_arg(&self) -> Option<&CountArg> {
+        self.args.count.as_ref()
+    }
+
+    pub fn label_arg(&self) -> &LabelArg {
+        &self.args.label
     }
 }
 
@@ -183,19 +190,40 @@ impl InvalidMatch<'_> {
     }
 }
 
-#[derive(Debug)]
 struct Args {
-    label: String,
-    count: Option<u32>,
+    label: LabelArg,
+    count: Option<CountArg>,
     /// The length of the parsed string including delimiting parentheses
     len: usize,
 }
 
 impl Args {
     pub fn label(&self) -> &str {
-        &self.label
+        &self.label.val
     }
 }
+
+pub struct Arg<T> {
+    /// Processed value, i.e., trimmed and parsed.
+    val: T,
+    /// The original string that was matched.
+    match_: String,
+    /// The span (in bytes) of the match whitin the file.
+    span: Range<usize>,
+}
+
+impl<T> Arg<T> {
+    pub fn span(&self) -> Range<usize> {
+        self.span.clone()
+    }
+
+    pub fn has_extra_whitespace(&self) -> bool {
+        self.match_.trim() != &self.match_
+    }
+}
+
+type LabelArg = Arg<String>;
+type CountArg = Arg<u16>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum ArgsError {
@@ -209,9 +237,9 @@ struct Matcher {
 
 impl Matcher {
     fn new() -> Matcher {
-        const ARGS_REGEX: &str = r"^\(\s*([A-Za-z0-9\-_]*)\s*(?:,\s*([^\)]*)\s*)?\)";
+        const OPTS_REGEX: &str = r"^\(([^,\)]+)(?:,([^\)]*))?\)";
         Matcher {
-            re: regex::Regex::new(ARGS_REGEX).unwrap(),
+            re: regex::Regex::new(OPTS_REGEX).unwrap(),
         }
     }
 
@@ -232,16 +260,26 @@ impl Matcher {
         let Some(captures) = self.re.captures(haystack) else {
             return Err(ArgsError::Malformed);
         };
-        let label = captures[1].to_string();
+
+        let m = captures.get(1).unwrap();
+        let label = LabelArg {
+            val: m.as_str().trim().to_string(),
+            match_: m.as_str().to_string(),
+            span: (byte_offset + m.start()..byte_offset + m.end()),
+        };
+
         let count = if let Some(m) = captures.get(2) {
-            Some(
-                m.as_str()
-                    .parse::<u32>()
-                    .map_err(|_| ArgsError::InvalidCount {
-                        start: byte_offset + m.start(),
-                        end: byte_offset + m.end(),
-                    })?,
-            )
+            let (start, end) = (byte_offset + m.start(), byte_offset + m.end());
+            let val = m
+                .as_str()
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| ArgsError::InvalidCount { start, end })?;
+            Some(CountArg {
+                val,
+                match_: m.as_str().to_string(),
+                span: (start..end),
+            })
         } else {
             None
         };

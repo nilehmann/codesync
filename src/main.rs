@@ -15,21 +15,27 @@ use codespan_reporting::{
         termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor},
     },
 };
-use codesync::{inflector, ArgsError, Comment, Matches};
+use codesync::{inflector, Arg, ArgsError, Comment, Matches};
 
 #[derive(Parser)]
 #[command(disable_help_subcommand = true)]
 enum Args {
     /// Check that all CODESYNC matches are well-formed and their counts are correct.
-    Check {
-        /// Check that all labels use the same casing
-        #[arg(long)]
-        consistent_casing: Option<Case>,
-    },
+    Check(CheckArgs),
     /// Show all valid CODESYNC comments with a given label. This ignores invalid matches.
     Show { label: String },
     /// List all labels from valid comments. This ignores invalid matches.
     List,
+}
+
+#[derive(clap::Args)]
+struct CheckArgs {
+    /// Check that all labels use the same casing.
+    #[arg(long)]
+    consistent_casing: Option<Case>,
+    /// Check that there is no extra whitespace around arguments.
+    #[arg(long)]
+    no_extra_whitespace: bool,
 }
 
 #[derive(Copy, Clone, clap::ValueEnum)]
@@ -101,8 +107,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let matches = Matches::collect()?;
     match args {
-        Args::Check { consistent_casing } => {
-            Checker::new(consistent_casing).check(&matches)?;
+        Args::Check(args) => {
+            Checker::new(args).check(&matches)?;
         }
         Args::Show { label } => {
             let mut db = FilesDB::new();
@@ -161,16 +167,16 @@ impl Emitter {
 }
 
 struct Checker {
-    consistent_casing: Option<Case>,
+    args: CheckArgs,
     db: FilesDB,
     has_errors: bool,
     emitter: Emitter,
 }
 
 impl Checker {
-    fn new(consistent_casing: Option<Case>) -> Self {
+    fn new(args: CheckArgs) -> Self {
         Self {
-            consistent_casing,
+            args,
             db: FilesDB::new(),
             has_errors: false,
             emitter: Emitter::new(true),
@@ -187,6 +193,13 @@ impl Checker {
         self.abort_if_errors();
 
         self.report_inconsistent_casing(matches)?;
+        self.abort_if_errors();
+
+        if self.args.no_extra_whitespace {
+            for comment in matches.comments() {
+                self.report_no_extra_whitespace(comment)?;
+            }
+        }
         self.abort_if_errors();
 
         Ok(())
@@ -242,7 +255,7 @@ impl Checker {
     }
 
     fn report_inconsistent_casing(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
-        if let Some(case) = self.consistent_casing {
+        if let Some(case) = self.args.consistent_casing {
             for comment in matches.comments() {
                 if !case.has_case(comment.label()) {
                     let diagnostic = self.invalid_case_diagnostic(comment, case)?;
@@ -251,6 +264,35 @@ impl Checker {
             }
         }
         Ok(())
+    }
+
+    fn report_no_extra_whitespace(&mut self, comment: Comment) -> Result<(), Box<dyn Error>> {
+        if let Some(count_arg) = comment.count_arg() {
+            if count_arg.has_extra_whitespace() {
+                let diagnostic = self.extra_whitespace_diagnostic(comment.file(), count_arg)?;
+                self.emit_diagnostic(diagnostic)?;
+            }
+        }
+        let label_arg = comment.label_arg();
+        if label_arg.has_extra_whitespace() {
+            if label_arg.has_extra_whitespace() {
+                let diagnostic = self.extra_whitespace_diagnostic(comment.file(), label_arg)?;
+                self.emit_diagnostic(diagnostic)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn extra_whitespace_diagnostic<T>(
+        &mut self,
+        file: &Path,
+        arg: &Arg<T>,
+    ) -> io::Result<Diagnostic<FileId>> {
+        let label = self.db.label(file, arg.span())?;
+        Ok(Diagnostic::error()
+            .with_message("argument has extra whitespace")
+            .with_labels(vec![label]))
     }
 
     fn invalid_case_diagnostic(
