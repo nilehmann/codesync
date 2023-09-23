@@ -15,17 +15,16 @@ use codespan_reporting::{
         termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor},
     },
 };
-use codesync::{Comment, Matches, ParseError};
+use codesync::{ArgsError, Comment, Matches};
 
 #[derive(Parser)]
 #[command(disable_help_subcommand = true)]
-/// This utility
 enum Args {
-    /// Check that all codesync comments are well-formed and their counts are correct.
+    /// Check that all CODESYNC matches are well-formed and their counts are correct.
     Check,
-    /// Show all valid codesync comments with a given label.
+    /// Show all valid CODESYNC comments with a given label. This ignores invalid matches.
     Show(ShowArgs),
-    /// List all valid labels.
+    /// List all labels from valid comments. This ignores invalid matches.
     List,
 }
 
@@ -47,7 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Args::Show(ShowArgs { label }) => {
             let mut db = FilesDB::new();
             let mut emitter = Emitter::new(false);
-            let comments = matches.valid().filter(|m| &m.opts.label == &label);
+            let comments = matches.valid().filter(|c| &c.label() == &label);
             let diagnostic = Diagnostic::note()
                 .with_message(format!("showing comments for label `{label}`"))
                 .with_labels(db.labels(comments)?);
@@ -116,34 +115,38 @@ impl Checker {
     }
 
     fn check(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
-        self.check_invalid(&matches)?;
+        self.report_invalid_matches(&matches)?;
         self.abort_if_errors();
 
         for (label, matches) in matches.group_by_label() {
-            self.check_counts(label, &matches)?;
+            self.report_incorrect_counts(label, &matches)?;
         }
         self.abort_if_errors();
 
         Ok(())
     }
 
-    fn check_invalid(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
+    fn report_invalid_matches(&mut self, matches: &Matches) -> Result<(), Box<dyn Error>> {
         for m in matches.invalid() {
             let diagnostic = match m.error {
-                ParseError::Malformed => self.malformed_diagnostic(m.file(), m.span())?,
-                ParseError::InvalidCount { start, end } => {
+                ArgsError::Malformed => self.malformed_diagnostic(m.file(), m.span())?,
+                ArgsError::InvalidCount { start, end } => {
                     self.invalid_count_diagnostic(m.file(), start..end)?
                 }
             };
-            self.emit(diagnostic)?;
+            self.emit_diagnostic(diagnostic)?;
         }
         Ok(())
     }
 
-    fn check_counts(&mut self, label: &str, matches: &[Comment]) -> Result<(), Box<dyn Error>> {
-        let counts: Vec<_> = matches
+    fn report_incorrect_counts(
+        &mut self,
+        label: &str,
+        comments: &[Comment],
+    ) -> Result<(), Box<dyn Error>> {
+        let counts: Vec<_> = comments
             .iter()
-            .map(|m| m.opts.count())
+            .map(Comment::count)
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
@@ -152,20 +155,20 @@ impl Checker {
             [] => {}
             [count] => {
                 let expected = *count as usize;
-                let found = matches.len();
+                let found = comments.len();
                 if found != expected {
                     let message = format!(
                         "expected {expected} {} with label `{label}`, found {found}",
                         pluralize("comment", expected)
                     );
-                    let diagnostic = self.mismatched_counts_diagnostic(matches, message)?;
-                    self.emit(diagnostic)?;
+                    let diagnostic = self.mismatched_counts_diagnostic(comments, message)?;
+                    self.emit_diagnostic(diagnostic)?;
                 }
             }
             _ => {
                 let message = format!("not all comments with label `{label}` have the same count",);
-                let diagnostic = self.mismatched_counts_diagnostic(matches, message)?;
-                self.emit(diagnostic)?;
+                let diagnostic = self.mismatched_counts_diagnostic(comments, message)?;
+                self.emit_diagnostic(diagnostic)?;
             }
         }
 
@@ -214,7 +217,7 @@ impl Checker {
         }
     }
 
-    fn emit(
+    fn emit_diagnostic(
         &mut self,
         diagnostic: Diagnostic<FileId>,
     ) -> Result<(), codespan_reporting::files::Error> {
