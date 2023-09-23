@@ -288,6 +288,7 @@ impl Checker {
     ) -> io::Result<Diagnostic<FileId>> {
         let label = self.db.label(path, span)?;
         let note = "comment must contain a label and an optional count, e.g., `CODESYNC(my-label)`, `CODESYNC(my-label, 3)`".to_string();
+
         Ok(Diagnostic::error()
             .with_message("malformed codesync comment")
             .with_labels(vec![label])

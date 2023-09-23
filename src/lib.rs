@@ -9,8 +9,8 @@ use std::{
 pub mod inflector;
 mod kmp;
 
-const CODESYNC: [u8; 8] = [b'C', b'O', b'D', b'E', b'S', b'Y', b'N', b'C'];
-const CODESYNC_KMP_TABLE: [usize; CODESYNC.len()] = kmp::table(CODESYNC);
+const PATTERN: [u8; 8] = [b'C', b'O', b'D', b'E', b'S', b'Y', b'N', b'C'];
+const PATTERN_KMP_TABLE: [usize; PATTERN.len()] = kmp::table(PATTERN);
 
 pub struct Matches {
     files: Vec<FileMatches>,
@@ -130,7 +130,7 @@ impl Match {
 
     fn span(&self) -> Range<usize> {
         let start = self.byte_offset;
-        let mut end = start + CODESYNC.len();
+        let mut end = start + PATTERN.len();
         if let Ok(opts) = &self.args {
             end += opts.len;
         }
@@ -209,17 +209,17 @@ struct Matcher {
 
 impl Matcher {
     fn new() -> Matcher {
-        const OPTS_REGEX: &str = r"^\(\s*([A-Za-z0-9\-_]*)\s*(?:,\s*([^\)]*)\s*)?\)";
+        const ARGS_REGEX: &str = r"^\(\s*([A-Za-z0-9\-_]*)\s*(?:,\s*([^\)]*)\s*)?\)";
         Matcher {
-            re: regex::Regex::new(OPTS_REGEX).unwrap(),
+            re: regex::Regex::new(ARGS_REGEX).unwrap(),
         }
     }
 
     fn parse_line(&self, byte_offset: usize, line: &str) -> Match {
         let idx = find_codesync_pattern(line.as_bytes()).expect("line should be a match");
         let opts = self.parse_args(
-            byte_offset + idx + CODESYNC.len(),
-            &line[idx + CODESYNC.len()..],
+            byte_offset + idx + PATTERN.len(),
+            &line[idx + PATTERN.len()..],
         );
 
         Match {
@@ -292,7 +292,7 @@ impl grep::matcher::Matcher for &Matcher {
         at: usize,
     ) -> Result<Option<grep::matcher::Match>, Self::Error> {
         Ok(find_codesync_pattern(&haystack[at..])
-            .map(|idx| grep::matcher::Match::new(at + idx, at + idx + CODESYNC.len())))
+            .map(|idx| grep::matcher::Match::new(at + idx, at + idx + PATTERN.len())))
     }
 
     fn new_captures(&self) -> Result<Self::Captures, Self::Error> {
@@ -301,5 +301,5 @@ impl grep::matcher::Matcher for &Matcher {
 }
 
 fn find_codesync_pattern(haystack: &[u8]) -> Option<usize> {
-    kmp::search(&haystack, &CODESYNC, &CODESYNC_KMP_TABLE)
+    kmp::search(&haystack, &PATTERN, &PATTERN_KMP_TABLE)
 }

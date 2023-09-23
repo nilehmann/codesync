@@ -12,7 +12,7 @@ use super::*;
 /// assert_eq!(to_snake_case("FooBar"),  "foo_bar");
 /// assert_eq!(to_snake_case("FOO_BAR"),  "foo_bar");
 /// assert_eq!(to_snake_case("fooBar"),  "foo_bar");
-/// assert_eq!(to_snake_case("fooBar3"),  "foo_bar_3");
+/// assert_eq!(to_snake_case("fooBar3"),  "foo_bar3");
 /// ```
 pub fn to_snake_case(non_snake_case_string: &str) -> String {
     to_case_snake_like(non_snake_case_string, "_", "lower")
@@ -25,8 +25,8 @@ pub fn to_snake_case(non_snake_case_string: &str) -> String {
 ///
 /// assert!(is_snake_case("foo_bar_string_that_is_really_really_long"));
 /// assert!(is_snake_case("foo_bar_1_string_that_is_really_really_long"));
+/// assert!(is_snake_case("foo_bar1_string_that_is_really_really_long"));
 ///
-/// assert!(!is_snake_case("foo_bar1_string_that_is_really_really_long"));
 /// assert!(!is_snake_case("Foo bar string that is really really long"));
 /// assert!(!is_snake_case("foo-bar-string-that-is-really-really-long"));
 /// assert!(!is_snake_case("FooBarIsAReallyReallyLongString"));

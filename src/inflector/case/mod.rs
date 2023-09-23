@@ -188,7 +188,7 @@ fn requires_separator(
     convertable_string: &str,
 ) -> bool {
     !first_character
-        && char_is_uppercase(char_with_index.1)
+        && char_with_index.1.is_uppercase()
         && next_or_previous_char_is_lowercase(convertable_string, char_with_index.0)
 }
 
@@ -234,9 +234,9 @@ fn next_or_previous_char_is_lowercase(convertable_string: &str, char_with_index:
             .is_lowercase()
 }
 
-fn char_is_uppercase(test_char: char) -> bool {
-    test_char == test_char.to_ascii_uppercase()
-}
+// fn char_is_uppercase(test_char: char) -> bool {
+//     test_char.is_uppercase()
+// }
 
 #[test]
 fn test_trim_bad_chars() {
@@ -256,16 +256,6 @@ fn test_is_not_alphanumeric_on_is_alphanumeric() {
 #[test]
 fn test_is_not_alphanumeric_on_is_not_alphanumeric() {
     assert!(is_not_alphanumeric('_'))
-}
-
-#[test]
-fn test_char_is_uppercase_when_it_is() {
-    assert!(char_is_uppercase('A'))
-}
-
-#[test]
-fn test_char_is_uppercase_when_it_is_not() {
-    assert!(!char_is_uppercase('a'))
 }
 
 #[test]

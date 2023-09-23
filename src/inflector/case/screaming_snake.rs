@@ -10,7 +10,7 @@ use super::*;
 /// assert_eq!(to_screaming_snake_case("Foo Bar"), "FOO_BAR");
 /// assert_eq!(to_screaming_snake_case("FooBar"), "FOO_BAR");
 /// assert_eq!(to_screaming_snake_case("fooBar"), "FOO_BAR");
-/// assert_eq!(to_screaming_snake_case("fooBar3"), "FOO_BAR_3");
+/// assert_eq!(to_screaming_snake_case("fooBar3"), "FOO_BAR3");
 /// ```
 pub fn to_screaming_snake_case(non_snake_case_string: &str) -> String {
     to_case_snake_like(non_snake_case_string, "_", "upper")
@@ -42,16 +42,9 @@ mod tests {
 
     #[test]
     fn from_camel_case() {
-        assert!(is_screaming_snake_case(
-            "FOO_BAR1_STRING_THAT_IS_REALLY_REALLY_LONG"
-        ));
-        println!("\n");
-        assert!(crate::inflector::is_kebab_case(
-            "foo-bar1-string-that-is-really-really-long"
-        ));
-        // let convertable_string: String = "fooBar".to_owned();
-        // let expected: String = "FOO_BAR".to_owned();
-        // assert_eq!(to_screaming_snake_case(&convertable_string), expected)
+        let convertable_string: String = "fooBar".to_owned();
+        let expected: String = "FOO_BAR".to_owned();
+        assert_eq!(to_screaming_snake_case(&convertable_string), expected)
     }
 
     #[test]
