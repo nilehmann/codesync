@@ -6,6 +6,7 @@ version = "0.1.0"
 [dependencies]
 clap = { version = "4.3.19", features = ["derive"] }
 codespan-reporting = "0.11.1"
-grep = "0.2.12"
+grep-matcher = "0.1.6"
+grep-searcher = "0.1.11"
 ignore = "0.4.20"
 regex = "1.9.1"

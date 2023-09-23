@@ -51,7 +51,7 @@ impl Matches {
             if file_type.is_file() {
                 let path = dir.path();
                 let mut file = FileMatches::new(path);
-                grep::searcher::Searcher::new().search_path(
+                grep_searcher::Searcher::new().search_path(
                     &matcher,
                     path,
                     Sink(|byte_offset, line| {
@@ -94,8 +94,7 @@ impl Matches {
 }
 
 /// A *match* is an occurrence of the `CODESYNC` pattern which may or may not be valid. A match
-/// is identified by the offset in bytes from the beginning of the file where the `CODESYNC` pattern
-/// was found.
+/// is identified by the offset in bytes from the beginning of the file where the pattern was found.
 pub struct Match {
     args: Result<Args, ArgsError>,
     /// The offset in bytes from the beginning of the file to the start of the match
@@ -294,12 +293,12 @@ impl Matcher {
 /// A sink that provides byte offset from the beggining of the file and matches as (lossily converted)
 /// strings while ignoring everything else.
 ///
-/// This is like [`grep::searcher::sinks::Lossy`] but provides the byte offset instead of the line number.
+/// This is like [`grep_searcher::sinks::Lossy`] but provides the byte offset instead of the line number.
 struct Sink<F>(pub F)
 where
     F: FnMut(u64, String);
 
-impl<F> grep::searcher::Sink for Sink<F>
+impl<F> grep_searcher::Sink for Sink<F>
 where
     F: FnMut(u64, String),
 {
@@ -307,8 +306,8 @@ where
 
     fn matched(
         &mut self,
-        _searcher: &grep::searcher::Searcher,
-        mat: &grep::searcher::SinkMatch<'_>,
+        _searcher: &grep_searcher::Searcher,
+        mat: &grep_searcher::SinkMatch<'_>,
     ) -> Result<bool, Self::Error> {
         let matched = match str::from_utf8(mat.bytes()) {
             Ok(s) => s.to_string(),
@@ -319,25 +318,25 @@ where
     }
 }
 
-impl grep::matcher::Matcher for &Matcher {
-    type Captures = grep::matcher::NoCaptures;
+impl grep_matcher::Matcher for &Matcher {
+    type Captures = grep_matcher::NoCaptures;
 
-    type Error = grep::matcher::NoError;
+    type Error = grep_matcher::NoError;
 
     fn find_at(
         &self,
         haystack: &[u8],
         at: usize,
-    ) -> Result<Option<grep::matcher::Match>, Self::Error> {
+    ) -> Result<Option<grep_matcher::Match>, Self::Error> {
         Ok(find_codesync_pattern(&haystack[at..])
-            .map(|idx| grep::matcher::Match::new(at + idx, at + idx + PATTERN.len())))
+            .map(|idx| grep_matcher::Match::new(at + idx, at + idx + PATTERN.len())))
     }
 
     fn new_captures(&self) -> Result<Self::Captures, Self::Error> {
-        Ok(grep::matcher::NoCaptures::new())
+        Ok(grep_matcher::NoCaptures::new())
     }
 }
 
 fn find_codesync_pattern(haystack: &[u8]) -> Option<usize> {
-    kmp::search(&haystack, &PATTERN, &PATTERN_KMP_TABLE)
+    kmp::search(&haystack, PATTERN, PATTERN_KMP_TABLE)
 }

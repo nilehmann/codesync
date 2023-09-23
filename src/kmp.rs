@@ -1,4 +1,8 @@
-pub const fn search(haystack: &[u8], needle: &[u8], table: &[usize]) -> Option<usize> {
+pub const fn search<const N: usize>(
+    haystack: &[u8],
+    needle: [u8; N],
+    table: [usize; N],
+) -> Option<usize> {
     let mut t_i = 0;
     let mut p_i = 0;
     let mut result_idx = 0;
